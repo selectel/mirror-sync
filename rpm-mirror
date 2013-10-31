@@ -1,0 +1,159 @@
+#!/bin/bash
+
+# Source separate config file if given
+CONFIG_FILE="$1"
+[[ -r "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+
+# Sync source
+UPSTREAM=${UPSTREAM:-""}
+UPSTREAM_DIR=${UPSTREAM_DIR:-""}
+
+# Sync destination
+LOCAL_DIR=${LOCAL_DIR:-""}
+
+# Misc
+DISABLE_CLEANUP=${DISABLE_CLEANUP:-"no"}
+
+#------------------------------------------------------------------------------#
+POSSIBLE_COMPRESSIONS=( gz bz2 xz lzma )
+
+BINROOT=$(dirname `readlink -f "$0"`)
+VERSION="0.1"
+
+. $BINROOT/util/msgs.sh
+. $BINROOT/util/rsync.sh
+. $BINROOT/util/checksum.sh
+
+[[ -n "$UPSTREAM" ]] || fatal "UPSTREAM is not defined in config"
+[[ -n "$UPSTREAM_DIR" ]] || fatal "UPSTREAM_DIR is not defined in config"
+[[ -n "$LOCAL_DIR" ]] || fatal "LOCAL_DIR is not defined in config"
+[[ -n "${REPOs[@]}" ]] || fatal "REPOs is not defined in config"
+
+#------------------------------------------------------------------------------#
+# Checks if 'value' contained within 'array'
+# USAGE: contains 'what' 'where'
+# $1 -- value to find in array
+# $2 -- array to search
+contains()
+{
+    local e
+    for e in "${@:2}"; do [[ "$e" = "$1" ]] && return 0; done
+    return 1
+}
+
+on_SIGINT()
+{
+    fatal "Got user interrupt, aborting"
+    exit 1
+}
+
+#------------------------------------------------------------------------------#
+# MAIN()
+#------------------------------------------------------------------------------#
+# Trap user abort
+trap "on_SIGINT" INT
+
+info "Started $0"
+debug "Upstream source is: $UPSTREAM::$UPSTREAM_DIR"
+debug "Local dir is: $LOCAL_DIR"
+debug "Repos to sync: ${REPOs[@]}"
+debug "BINROOT: $BINROOT"
+
+
+################################################################################
+# Stage 1
+################################################################################
+
+files_to_dl_list=`mktemp --suffix="-rpm-mirror"`
+rpm_sums=`mktemp --suffix="-deb-mirror-sums"`
+rsync_log=`mktemp --suffix="-deb-mirror-rslog"`
+
+## Little hax, some repos got required unlisted files
+UPSTREAM_RS_DIR=${UPSTREAM_DIR#*/}
+for entry in ${ADDITIONAL_FILES[@]}; do
+    subentrys=( `rsync_ls "$entry"` )
+    for subentry in ${subentrys[@]}; do 
+	subentry=${subentry#$UPSTREAM_RS_DIR/}
+        echo "$subentry" >> "$files_to_dl_list"
+	echo "added $subentry"
+    done
+done
+
+for repo in "${REPOs[@]}"; do
+    info "Fetching repo '$repo' metadata"
+
+    mkdir -p "$LOCAL_DIR/$repo/repodata"
+    fetch "$repo/repodata" "$LOCAL_DIR/$repo/" --recursive --delete --delete-after || \
+        fatal "Failed to fetch metainfo for repo $repo"
+
+
+    info "Parsing repo '$repo' metadata"
+    $BINROOT/util/parseRPMrepo.py $LOCAL_DIR/$repo 2> >(awk "{\$3=\"${repo}/\"\$3; print \$0}" >> "$rpm_sums") | sed "s#^#${repo}/#" >> \
+        $files_to_dl_list
+done
+
+
+info "Downloading RPM files"
+rsync --verbose --progress --out-format="%i %n" --stats \
+    --recursive --perms --links --times --hard-links --sparse --safe-links \
+    --exclude=".tmp/" --exclude=".temp/" --exclude=".~tmp~/" \
+    --files-from="$files_to_dl_list" \
+    --bwlimit=5192 \
+    "${UPSTREAM}::${UPSTREAM_DIR}/" "$LOCAL_DIR" | tee "$rsync_log"
+
+if [[ $? != 0 ]]; then
+    rm "$files_to_dl_list"
+    fatal "Failed to sync all package files, see log for details"
+else
+    info "Sync successfully completed"
+fi
+
+# Check downloaded files
+fresh_files=`egrep "^>f......... .*" "$rsync_log" | awk '{print $2}'`
+
+for fresh_file in $fresh_files; do 
+    check_file "$rpm_sums" "$LOCAL_DIR" "$fresh_file"
+    if [[ $? != 0 ]]; then 
+        rm "$rpm_sums"
+        rm "$rsync_log"
+        fatal "Checksum check failed for file $LOCAL_DIR/$fresh_file"
+    fi
+done
+#rm "$rpm_sums"
+#rm "$rsync_log"
+
+current_RPM_files=`mktemp --suffix r-m_got`
+required_RPM_files=`mktemp --suffix r-m_need`
+
+# Create lists of files that we got and that we need
+wayback="`pwd`"
+cd "$LOCAL_DIR/"
+find -iname "*.rpm" -type f -or -iname "*.rpm" -type l | sed 's/^.\///'| sort -u > $current_RPM_files
+cat $files_to_dl_list | grep ".*\.rpm$" | sort -u > $required_RPM_files
+cd "$wayback"
+
+if [[ "$DISABLE_CLEANUP" = "no" ]]; then
+    info "Cleaning up RPM files"
+    # Clean obsolete files
+    obsolete_files=`comm -3 -2 "$current_RPM_files" "$required_RPM_files"`
+    for file in $obsolete_files; do
+        debug_job_start "Deleting '$LOCAL_DIR/$file'"
+        rm "$LOCAL_DIR/$file" && debug_job_ok || debug_job_err
+    done
+fi
+
+info "Doublechecking that required RPM files exists"
+debug "Comparing '$current_RPM_files' and '$required_RPM_files'"
+missing_files=`comm -3 -1 "$current_RPM_files" "$required_RPM_files"`
+
+if [[ -n "$missing_files" ]]; then
+    error "Some files are missing after sync!!!:"
+    error "$missing_files"
+    fatal "Aborting due to missing files"
+fi
+rm "$files_to_dl_list"
+rm "$required_RPM_files"
+rm "$current_RPM_files"
+
+# Timestamp
+echo "Updated at: `date`" > $LOCAL_DIR/.lastupdate

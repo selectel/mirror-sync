@@ -1,0 +1,162 @@
+#!/bin/bash
+
+# Source separate config file if given
+CONFIG_FILE="$1"
+[[ -r "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+
+# Sync source
+UPSTREAM=${UPSTREAM:-""}
+UPSTREAM_DIR=${UPSTREAM_DIR:-""}
+
+# Sync destination
+LOCAL_DIR=${LOCAL_DIR:-""}
+
+# Local fqdn
+LOCAL_FQDN=${LOCAL_FQDN:-"`hostname -f`"}
+
+#declare -A DIST_COMPONENTs
+
+#------------------------------------------------------------------------------#
+POSSIBLE_COMPRESSIONS=( tar.gz tar.bz2 tar.xz tar.lzma )
+
+BINROOT=$(dirname `readlink -f "$0"`)
+VERSION="0.1"
+
+. $BINROOT/util/msgs.sh
+. $BINROOT/util/rsync.sh
+. $BINROOT/util/checksum.sh
+
+[[ -n "$UPSTREAM" ]] || fatal "UPSTREAM is not defined in config"
+[[ -n "$UPSTREAM_DIR" ]] || fatal "UPSTREAM_DIR is not defined in config"
+[[ -n "$LOCAL_DIR" ]] || fatal "LOCAL_DIR is not defined in config"
+[[ -n "${ARCHs[@]}" ]] || fatal "ARCHs is not defined in config"
+[[ -n "${REPOs[@]}" ]] || fatal "REPOs is not defined in config"
+
+#------------------------------------------------------------------------------#
+on_SIGINT()
+{
+    fatal "Got user interrupt, aborting"
+    exit 1
+}
+
+#------------------------------------------------------------------------------#
+# MAIN()
+#------------------------------------------------------------------------------#
+# Trap user abort
+trap "on_SIGINT" INT
+
+info "Started $0 $*"
+debug "Upstream source is:      $UPSTREAM::$UPSTREAM_DIR"
+debug "Local dir is:            $LOCAL_DIR"
+debug "Architectures to sync:   ${ARCHs[@]}"
+debug "Repos to sync:           ${REPOs[@]}"
+debug "POSSIBLE_COMPRESSIONS:   ${POSSIBLE_COMPRESSIONS[@]}"
+debug "BINROOT:                 $BINROOT"
+
+REPODBs=()
+for repo in ${REPOs[@]}; do
+    for arch in ${ARCHs[@]}; do
+        # Build list of possible index files
+        to_fetch=()
+        to_fetch+=( /$repo/os/$arch/$repo.db )
+        to_fetch+=( /$repo/os/$arch/$repo.abs )
+        to_fetch+=( /$repo/os/$arch/$repo.files )
+        for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
+            to_fetch+=( /$repo/os/$arch/$repo.db.$ext )
+            to_fetch+=( /$repo/os/$arch/$repo.abs.$ext )
+            to_fetch+=( /$repo/os/$arch/$repo.files.$ext )
+        done
+
+        # WARNING: Also download all symlinks in the same dir
+        # WARNING: it's possible that some wrong repo will have actual
+        # WARNING: packages here
+        to_fetch+=( `rsync_ls "$repo/os/$arch/*.pkg.tar.xz"` )
+
+        # Fetch index files
+        info "Fetching index files for '$repo' ($arch)"
+        fetch_all "$LOCAL_DIR" ${to_fetch[@]}
+
+        # Determine real DB index
+        dbfile=`readlink -f $LOCAL_DIR/$repo/os/$arch/$repo.db`
+        if [[ -f "$dbfile" ]]; then
+            # We got a DB index
+            # Add repo database to "to-parse" list
+            REPODBs+=( $dbfile )
+        else
+            # TODO: Add better index finding logic
+            fatal "Couldn't find index for repo '$repo' ($arch)"
+        fi
+    done
+done
+
+files_to_dl_list=`mktemp --suffix="-arch-mirror"`
+pkg_sums=`mktemp --suffix="-arch-mirror-sums"`
+rsync_log=`mktemp --suffix="-arch-mirror-rslog"`
+                                                                                 
+$BINROOT/util/parseArchDB.py ${REPODBs[@]} 2> >(sed -e "s#${LOCAL_DIR}/##" >> "$pkg_sums") | sed -e "s#${LOCAL_DIR}/##" > \
+    "$files_to_dl_list" || \
+    fatal "Unable to create list of packages to fetch"                          
+                                                                                  
+info "Downloading pool files"
+rsync --verbose --out-format="%i %n" --stats \
+    --recursive --perms --links --times --hard-links --sparse --safe-links \
+    --exclude=".tmp/" --exclude=".temp/" --exclude=".~tmp~/" \
+    --files-from="$files_to_dl_list" \
+    "${UPSTREAM}::${UPSTREAM_DIR}/" "$LOCAL_DIR"  | tee "$rsync_log"
+
+    #--bwlimit=5192 \
+
+cat "$files_to_dl_list" | wc -l
+
+# Check downloaded files
+fresh_files=`egrep "^>f......... .*" "$rsync_log" | awk '{print $2}'`           
+                                                                                 
+for fresh_file in $fresh_files; do
+    check_file "$pkg_sums" "$LOCAL_DIR" "$fresh_file"
+    if [[ $? != 0 ]]; then
+        rm "$pkg_sums"
+        rm "$rsync_log"
+        fatal "Checksum check failed for file $LOCAL_DIR/$fresh_file"
+    fi
+done
+rm "$pkg_sums"                                                                   
+rm "$rsync_log"
+
+pool_current_files=`mktemp --suffix a-m_got-cur`
+pool_required_files=`mktemp --suffix a-m_got-req`
+                                                                                  
+wayback="`pwd`"                                                                 
+cd "$LOCAL_DIR/"
+
+# Create lists of files that we got and that we need                            
+find pool -type f -or -type l | sort -u > $pool_current_files                   
+ 
+cat $files_to_dl_list | grep "^pool" | sort -u > $pool_required_files           
+cd "$wayback"                                                                   
+ 
+info "Cleaning up pool files"                                                   
+# Clean obsolete files                                                          
+obsolete_files=`comm -3 -2 "$pool_current_files" "$pool_required_files"`        
+for file in $obsolete_files; do                                                 
+    debug_job_start "Deleting '$LOCAL_DIR/$file'"                               
+    rm "$LOCAL_DIR/$file" && debug_job_ok || debug_job_err                      
+done                                                                            
+ 
+info "Doublechecking that required pool files exists"                           
+missing_files=`comm -3 -1 "$pool_current_files" "$pool_required_files"`         
+ 
+if [[ -n "$missing_files" ]]; then                                              
+    error "Some files are missing after sync!!!:"                               
+    error "$missing_files"                                                      
+    fatal "Aborting due to missing files"                                       
+fi 
+
+rm "$files_to_dl_list"
+rm "$pool_required_files"                                                       
+rm "$pool_current_files"
+
+info "Updating lastsync from upstream"
+fetch "/lastsync" "$LOCAL_DIR/"
+
+# Timestamp
+echo "Updated at: `date`" > $LOCAL_DIR/.lastupdate

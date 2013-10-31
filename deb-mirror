@@ -1,0 +1,534 @@
+#!/bin/bash
+
+# Source separate config file if given
+CONFIG_FILE="$1"
+[[ -r "$CONFIG_FILE" ]] && . "$CONFIG_FILE"
+
+# Sync source
+UPSTREAM=${UPSTREAM:-""}
+UPSTREAM_DIR=${UPSTREAM_DIR:-""}
+
+# Sync destination
+LOCAL_DIR=${LOCAL_DIR:-""}
+
+# Local fqdn
+LOCAL_FQDN=${LOCAL_FQDN:-"`hostname -f`"}
+
+#declare -A DIST_COMPONENTs
+
+# Optional fetch configuration
+FETCH_I18N=${FETCH_I18N:-"yes"}             # Fetch translations
+FETCH_SOURCES=${FETCH_SOURCES:-"no"}        # Fetch packages sources
+FETCH_CONTENTS=${FETCH_CONTENTS:-"no"}      # Fetch 'Contents' file for distro
+FETCH_INSTALLER=${FETCH_INSTALLER:="no"}    # Fetch separate 'debian-installer'
+FETCH_DIFF=${FETCH_DIFF:-"no"}              # Fetch diffs of 'Packages' 
+                                            # (speedsup client update... NOT)
+# Misc
+ARCH_ALL_IS_MANDATORY=${ARCH_ALL_IS_MANDATORY:-"no"}
+
+#------------------------------------------------------------------------------#
+POSSIBLE_COMPRESSIONS=( gz bz2 xz lzma )
+
+BINROOT=$(dirname `readlink -f "$0"`)
+VERSION="0.1"
+
+. $BINROOT/util/msgs.sh
+. $BINROOT/util/rsync.sh
+. $BINROOT/util/dpkg.sh
+. $BINROOT/util/checksum.sh
+
+[[ -n "$UPSTREAM" ]] || fatal "UPSTREAM is not defined in config"
+[[ -n "$UPSTREAM_DIR" ]] || fatal "UPSTREAM_DIR is not defined in config"
+[[ -n "$LOCAL_DIR" ]] || fatal "LOCAL_DIR is not defined in config"
+[[ -n "${ARCHs[@]}" ]] || fatal "ARCHs is not defined in config"
+[[ -n "${DISTs[@]}" ]] || fatal "DISTs is not defined in config"
+
+#------------------------------------------------------------------------------#
+# Checks if 'value' contained within 'array'
+# USAGE: contains 'what' 'where'
+# $1 -- value to find in array
+# $2 -- array to search
+contains()
+{
+    local e
+    for e in "${@:2}"; do [[ "$e" = "$1" ]] && return 0; done
+    return 1
+}
+
+on_SIGINT()
+{
+    fatal "Got user interrupt, aborting"
+    exit 1
+}
+
+#------------------------------------------------------------------------------#
+# MAIN()
+#------------------------------------------------------------------------------#
+# Trap user abort
+trap "on_SIGINT" INT
+
+info "Started $0 $*"
+debug "Upstream source is: $UPSTREAM::$UPSTREAM_DIR"
+debug "Local dir is: $LOCAL_DIR"
+debug "Architectures to sync: ${ARCHs[@]}"
+debug "Dists to sync: ${DISTs[@]}"
+debug "FETCH_I18N:              $FETCH_I18N           "
+debug "FETCH_SOURCES:           $FETCH_SOURCES        "
+debug "FETCH_CONTENTS:          $FETCH_CONTENTS       "
+debug "FETCH_INSTALLER:         $FETCH_INSTALLER      "
+debug "FETCH_DIFF:              $FETCH_DIFF           "
+debug "ARCH_ALL_IS_MANDATORY:   $ARCH_ALL_IS_MANDATORY"
+debug "POSSIBLE_COMPRESSIONS:   ${POSSIBLE_COMPRESSIONS[@]}"
+debug "BINROOT:                 $BINROOT              "
+
+# Create dist dir
+mkdir -p $LOCAL_DIR/dists
+
+# Array of Packages files, that contains package descriptions
+packages_pool_files=()
+sources_pool_files=()
+
+debug_job_start "Checking if upstream mirror update is in progress..."
+if rsync_file_exists "Archive-Update-in-Progress*"; then
+    fatal "'Archive-Update-in-Progress' file found on upstream mirror. Aborting"
+fi; debug_job_ok
+
+################################################################################
+# Stage 1
+# Download metainformation files
+################################################################################
+for dist in "${DISTs[@]}"; do
+    info "Fetching dist '$dist' lists"
+    ############################################################################
+    # Phase 1: Check if we have aliased distro and create necessary symlinks
+    # aliases is specified after '@'-sign in dist name, separated by commas
+    # For example: 'wheezy@testing,somealias' means dist 'wheezy' with symlinks
+    # 'testing' and 'somealias' pointing to it
+    ############################################################################
+    # TODO: get aliases from Release suite
+    if [ -n ${dist#*@} ]; then
+        normal_dist="${dist%%@*}"
+        for dist_alias in `echo ${dist#*@} | tr ',' ' '`; do
+            if [[ "$dist_alias" == "$normal_dist" ]]; then
+                continue
+            fi
+
+            if [ ! -L $LOCAL_DIR/dists/$dist_alias ]; then
+                debug "Creating dist alias '$dist_alias' -> '$normal_dist'"
+                ln -s "$normal_dist" "$LOCAL_DIR/dists/$dist_alias" || \
+                    error "Error creating alias for $normal_dist ($dist_alias)" 
+            fi
+        done
+        dist="$normal_dist"
+        unset normal_dist
+    fi
+
+    ############################################################################
+    # Phase 2: Create distribution dir
+    ############################################################################
+    mkdir -p $LOCAL_DIR/dists/$dist/
+
+    ############################################################################
+    # Phase 3: Fetch Release files
+    # InRelease uses new scheme of inline Release signing
+    # Old scheme implies separate 'Release' and 'Release.gpg' files
+    ############################################################################
+    debug "Fetching Release files"
+    for rel_file in InRelease Release Release.gpg; do
+        fetch "/dists/$dist/$rel_file" "$LOCAL_DIR/dists/$dist/"
+    done
+    release_file="$LOCAL_DIR/dists/$dist/InRelease"
+
+    # Check InRelease file
+    if [ -f "$release_file" ]; then
+        inrl_valid=$(date -d "`grep Valid-Until /srv/mirror/debian/debian_bg/dists/wheezy-updates/InRelease  | awk '{$1=""; print $0}'`" +%s)
+        now=$(date +%s)
+        if [[ $(( $now - $inrl_valid )) -gt -86400 ]]; then
+            info "InRelease file will expire before the next update, removing it..."
+            rm -f "$release_file"
+            release_file="$LOCAL_DIR/dists/$dist/Release"
+        fi
+    else
+        release_file="$LOCAL_DIR/dists/$dist/Release"
+    fi
+    [ -f "$release_file" ] || fatal "Unable to find release file for dist $dist"
+    debug "Got Release file '$release_file'"
+
+    ############################################################################
+    # Phase 4: check release signature
+    ############################################################################
+    if [[ "$release_file" =~ ".*InRelease$" ]]; then
+        gpg --verify "$release_file" || \
+            fatal "Failed to check signature for $release_file"
+    elif [[ "$release_file" =~ ".*Release" ]]; then
+        gpg --verify "${release_file}.gpg" "${release_file}" || \
+            fatal "Failed to check signature for $release_file"
+    fi
+
+    ############################################################################
+    # Phase 5: Determine which components and arches to download
+    # Case A: If we have user specified component list, and hasn't found any 
+    #         in distro description, then blindly use user given values
+    # Case B: If we have no user specified component list, try to get them from
+    #         repository Release file, if it fails - bail out
+    # Case C: If we have both, calculate intersection of them
+    ############################################################################
+    debug "Calculating arches/components to fetch from dist"
+    components=`get_dist_components $release_file "${DIST_COMPONENTs[$dist]}"`
+    arches=`get_dist_architectures $release_file ${ARCHs[@]}`
+
+    # Phase 6: Fork components into binary_components
+    # That allows us to add special sub-components specific to binary components
+    # such as 'debian-installer'
+    binary_components="$components"
+
+    ############################################################################
+    # Phase 7: Check if we must fetch 'debian-installer' sub-components and add 
+    # them to the binary_components list if needed
+    ############################################################################
+    if [[ "$FETCH_INSTALLER" = "yes" ]]; then
+        for component in $components; do
+            if rsync_file_exists "dists/$dist/$component/debian-installer"; then
+                debug "Adding debian-installer '$component/debian-installer'"
+                binary_components="$binary_components $component/debian-installer"
+            else
+                error "Not found debian-installer at '$component/debian-installer'"
+            fi
+        done
+    fi
+
+    ############################################################################
+    # Phase 8: Fetch binary components 'Packages' indexes and diffs
+    ############################################################################
+    debug "Will fetch binary components: $binary_components"
+    for component in $binary_components; do
+        info "Fetching component '$component' binary package lists"
+        # Component path
+        comp_path="dists/$dist/$component"
+
+        # Create component dir
+        mkdir -p "$LOCAL_DIR/$comp_path"
+
+        # First, fetch binary packages lists
+        for arch in $arches; do
+            arch_path="$comp_path/binary-$arch"
+
+            # Check if remote the dir exists
+            if ! rsync_file_exists "$arch_path"; then
+                # Missing 'all' architecture in a non critical error 
+                if [[ "$arch" = "all" ]] && [[ "$ARCH_ALL_IS_MANDATORY" != "yes" ]]; then
+                    debug "Missing 'all' architecture in $dist/$component"
+                    continue
+                fi
+                fatal "Arch '$arch' in '$dist/$component' doesn't exist"
+            fi
+
+            # Prepare component dir
+            mkdir -p "$LOCAL_DIR/$arch_path"
+            to_fetch=()
+
+            # List of files that we want to dl
+            to_fetch+=( "$arch_path/Release" )
+            to_fetch+=( "$arch_path/Packages" )
+            for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
+                to_fetch+=( "$arch_path/Packages.$ext" )
+            done
+
+            # Check if we want a Packages.diff files Index too
+            if [[ "$FETCH_DIFF" = "yes" ]] && \
+                rsync_file_exists "$arch_path/Packages.diff/Index"; then
+                to_fetch+=( `rsync_ls "$arch_path/Packages.diff/*"` )
+            fi
+
+            # Download files in our wishlist and get names of actually
+            # downloaded files
+            fetched_files=`fetch_all "$LOCAL_DIR" ${to_fetch[@]}`
+
+            # Verify all fetched files
+            for file in ${fetched_files[@]}; do
+                # Skip checking of diffs, they are mentioned in Index file
+                # Validate only Index file
+                if [[ "`dirname $file`" = "$LOCAL_DIR/$arch_path/Packages.diff" ]]; then
+                    [[ "`basename $file`" != "Index" ]] && continue
+                fi
+
+                # Check file by Release file's checksum
+                debug_job_start "Checking file $file"
+                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
+                    fatal "Checksum check failed for $file"
+                debug_job_ok
+            done
+
+            # Make sure that we have at least one valid packages list
+            packages_file=`guess_filename "$LOCAL_DIR/$arch_path/Packages"`
+            if [[ -z "$packages_file" ]]; then
+                fatal "Failed to find Packages file at $arch_path"
+            fi
+
+            # Check integrity of .diffs if we got them
+            diff_index=`guess_filename "$LOCAL_DIR/$arch_path/Packages.diff/Index"`
+            if [[ "$FETCH_DIFF" = "yes" ]] && [[ -n "$diff_index" ]]; then
+                diffs=`cat $diff_index | awk '/SHA1-Patches:/,0' | tail -n +2 | awk '{print $3}'`
+                for diff in $diffs; do
+                    debug_job_start "Checking file $LOCAL_DIR/$arch_path/Packages.diff/$diff"
+                    diff_exp_sha1=`cat $diff_index | awk '/SHA1-Patches:/,0' | grep "$diff" | awk '{print $1}'`
+                    diff_real_sha1=`read_file "$LOCAL_DIR/$arch_path/Packages.diff/$diff" | sha1sum | awk '{print $1}'`
+                    if [[ "$diff_exp_sha1" != "$diff_real_sha1" ]]; then
+                        debug_job_err
+                        error "Checksum failed on file $arch_path/Packages.diff/$diff, removing all diffs"
+                        rm -rf "$LOCAL_DIR/$arch_path/Packages.diff"
+                        break
+                    fi
+                    debug_job_ok
+                done
+            fi
+
+            # Parse package file and add packages from it to dl list
+            packages_pool_files+=( "$packages_file" )
+        done
+    done
+
+    ############################################################################
+    # Phase 9: Fetch additional stuff for components, i18n, sources, 'Contents'
+    ############################################################################
+    for component in $components; do
+        comp_path="dists/$dist/$component"
+        mkdir -p "$LOCAL_DIR/$comp_path"
+
+        # Second, the i18n packages
+        info "Fetching section '$component' i18n"
+        if [[ "$FETCH_I18N" = "yes" ]]; then
+            mkdir -p "$LOCAL_DIR/$comp_path/i18n/"
+            to_fetch=()
+            to_fetch+=( "$comp_path/i18n/Index" )
+            for i18n in ${I18Ns[@]}; do
+                to_fetch+=( "$comp_path/i18n/Translation-$i18n" )
+                # Translation files may have diffs too
+                to_fetch+=( "$comp_path/i18n/Translation-$i18n.diff/*" )
+                for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
+                    to_fetch+=( "$comp_path/i18n/Translation-$i18n.$ext" )
+                done
+
+            # Download files in our wishlist and get names of actually
+            # downloaded files
+            fetched_files=`fetch_all "$LOCAL_DIR" ${to_fetch[@]}`
+
+            # Verify
+            for file in ${fetched_files[@]}; do
+                # Skip checking of diffs, except it's Index file
+                if [[ "`dirname $file`" = "$LOCAL_DIR/$comp_path/i18n/Translation-$i18n.diff" ]]; then
+                    [[ "`basename $file`" != "Index" ]] && continue
+                fi
+
+                debug_job_start "Checking file $file"
+                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
+                    fatal "Checksum check failed for $file"
+                debug_job_ok
+            done
+
+            # Check integrity of .diffs if we got them
+            diff_index=`guess_filename "$LOCAL_DIR/$comp_path/i18n/Translation-$i18n.diff/Index"`
+            if [[ -n "$diff_index" ]]; then
+                diffs=`cat $diff_index | awk '/SHA1-Patches:/,0' | tail -n +2 | awk '{print $3}'`
+                for diff in $diffs; do
+                    debug_job_start "Checking file $LOCAL_DIR/$comp_path/i18n/Translation-$i18n.diff/$diff"
+                    diff_exp_sha1=`cat $diff_index | awk '/SHA1-Patches:/,0' | grep "$diff" | awk '{print $1}'`
+                    diff_real_sha1=`read_file "$LOCAL_DIR/$comp_path/i18n/Translation-$i18n.diff/$diff" | sha1sum | awk '{print $1}'`
+                    if [[ "$diff_exp_sha1" != "$diff_real_sha1" ]]; then
+                        debug_job_err
+                        fatal "Checksum failed on file $comp_path/i18n/Translation-$i18n.diff/$diff"
+                    fi
+                    debug_job_ok
+                done
+            fi
+            done
+        fi
+
+        # Third is the Sources
+        if [[ "$FETCH_SOURCES" = "yes" ]]; then
+            info "Fetching component '$component' source package lists"
+            mkdir -p "$LOCAL_DIR/$comp_path/source/"
+            to_fetch=()
+            to_fetch+=( "$comp_path/source/Release" )
+            to_fetch+=( "$comp_path/source/Sources" )
+            for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
+                to_fetch+=( "$comp_path/source/Sources.$ext" )
+            done
+
+            # Download files in our wishlist and get names of actually
+            # downloaded files
+            fetched_files=`fetch_all "$LOCAL_DIR" ${to_fetch[@]}`
+
+            # Verify
+            for file in ${fetched_files[@]}; do
+                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
+                    fatal "Checksum check failed for $file"
+            done
+
+            sources_file=`guess_filename "$LOCAL_DIR/$comp_path/source/Sources"`
+            if [[ -z "$sources_file" ]]; then
+                fatal "Failed to find Sources file at $LOCAL_DIR/$comp_path/source"
+            fi
+
+
+            # Parse sources file and add packages from it to dl list
+            sources_pool_files+=( "$sources_file" )
+        fi
+
+        # Fetch the contents packs
+        if [[ "$FETCH_CONTENTS" = "yes" ]]; then
+            info "Fetching component '$component' content lists"
+            to_fetch=()
+            for arch in $arches; do
+                to_fetch+=( "$comp_path/Contents-$arch" )
+                for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
+                    to_fetch+=( "$comp_path/Contents-$arch.$ext" )
+                done
+            done
+            # Download files in our wishlist and get names of actually
+            # downloaded files
+            fetched_files=`fetch_all "$LOCAL_DIR" ${to_fetch[@]}`
+
+            # Verify
+            for file in ${fetched_files[@]}; do
+                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
+                    fatal "Checksum check failed for $file"
+            done
+        fi
+        done
+
+done
+
+################################################################################
+# Stage 2
+# Download pool of packages
+################################################################################
+
+info "Parsing package and sources files files:"
+info "${packages_pool_files[@]}"
+info "${sources_pool_files[@]}"
+
+files_to_dl_list=`mktemp --suffix="-deb-mirror"`
+# File that contains md5sums of deb pkgs
+deb_md5=`mktemp --suffix="-deb-mirror-md5"`
+rsync_log=`mktemp --suffix="-deb-mirror-rslog"`
+
+$BINROOT/util/parsePackages.py ${packages_pool_files[@]} > "$files_to_dl_list" \
+                                                        2> "$deb_md5" && \
+$BINROOT/util/parseSources.py ${sources_pool_files[@]}  >> "$files_to_dl_list" || \
+    fatal "Unable to create list of packages to fetch"
+
+# Subroutine to check md5 sum for the file
+#check_md5_file()
+#{   
+#    debug_job_start "Checking md5sum of file '$LOCAL_DIR/$1'"
+#    expected_md5=`grep "$1" "$deb_md5" | awk '{print $1}' | head -n 1`
+#    [[ -z "$expected_md5" ]] && echo -n "ms5sum not found..." \
+#        && debug_job_skip && return 0
+#
+#    actual_md5=`md5sum "$LOCAL_DIR/$1" | head -c 32`
+#    [[ "$expected_md5" == "$actual_md5" ]] && debug_job_ok && return 0
+#    debug_job_err
+#    return 1
+#}
+
+info "Downloading pool files"
+rsync --verbose --out-format="%i %n" --stats \
+    --recursive --perms --links --times --hard-links --sparse --safe-links \
+    --exclude=".tmp/" --exclude=".temp/" --exclude=".~tmp~/" \
+    --files-from="$files_to_dl_list" \
+    --bwlimit=5192 \
+    "${UPSTREAM}::${UPSTREAM_DIR}/" "$LOCAL_DIR" | tee "$rsync_log"
+
+#    --files-from="$files_to_dl_list" \--block-size=8192 
+#--max-delete=40000 --delay-updates --delete --delete-after \
+# Check if rsync was ok
+if [[ $? != 0 ]]; then
+    rm "$files_to_dl_list"
+    fatal "Failed to sync all package files, see log for details"
+    #error "Failed to sync all package files, see log for details"
+else
+    info "Primary sync successfully completed"
+fi
+
+# Let's check new file MD5sums
+fresh_files=`egrep "^>f......... .*" "$rsync_log" | awk '{print $2}'`
+
+for fresh_file in $fresh_files; do 
+    check_file "$deb_md5" "$LOCAL_DIR" "$fresh_file"
+    if [[ $? != 0 ]]; then 
+        rm "$deb_md5"
+        rm "$rsync_log"
+        fatal "MD5sum check failed for file $LOCAL_DIR/$fresh_file"
+    fi
+done
+rm "$deb_md5"
+rm "$rsync_log"
+
+
+# Now iterate through all downloaded files and check if any of them are symlink
+# download neccessary files if needed
+# Yeah, some times section can contain a metainfo for symlink to file in 
+# diffirent section that is no longer exists in there, so it will be wiped as
+# unused
+wayback="`pwd`"
+cd "$LOCAL_DIR/"
+
+info "Checking for treacherous cross-section symlinks"
+info "Total files `cat $files_to_dl_list | grep "^pool" | wc -l`"
+for file_to_dl in `cat $files_to_dl_list | grep "^pool"`; do
+    if [[ -L "$LOCAL_DIR/$file_to_dl" ]]; then
+        realfile=`readlink -m $file_to_dl`
+        info "File $LOCAL_DIR/$file_to_dl is a link to $realfile, adding..."
+        echo "${realfile#$LOCAL_DIR/*}" >> $files_to_dl_list
+        if [[ ! -f "$realfile" ]]; then
+            error "File $realfile not found, attempting to redownload..."
+            fetch "${realfile#${LOCAL_DIR}*}" "$realfile"
+        fi
+    fi
+done 
+
+pool_current_files=`mktemp --suffix d-m_got`
+pool_required_files=`mktemp --suffix d-m_req`
+
+# Create lists of files that we got and that we need
+find pool -type f -or -type l | sort -u > $pool_current_files
+
+cat $files_to_dl_list | grep "^pool" | sort -u > $pool_required_files
+cd "$wayback"
+
+info "Cleaning up pool files"
+# Clean obsolete files
+obsolete_files=`comm -3 -2 "$pool_current_files" "$pool_required_files"`
+for file in $obsolete_files; do
+    debug_job_start "Deleting '$LOCAL_DIR/$file'"
+    rm "$LOCAL_DIR/$file" && debug_job_ok || debug_job_err
+done
+
+info "Doublechecking that required pool files exists"
+missing_files=`comm -3 -1 "$pool_current_files" "$pool_required_files"`
+
+if [[ -n "$missing_files" ]]; then
+    error "Some files are missing after sync!!!:"
+    error "$missing_files"
+    fatal "Aborting due to missing files"
+fi
+
+rm "$files_to_dl_list"
+rm "$pool_required_files"
+rm "$pool_current_files"
+
+# Create trace
+rm -r "$LOCAL_DIR/project/trace/"
+mkdir -p "$LOCAL_DIR/project/trace/"
+fetch "/project/trace/*" "$LOCAL_DIR/project/trace/"
+
+trace_file="$LOCAL_DIR/project/trace/$LOCAL_FQDN"
+LC_ALL=POSIX LANG=POSIX date -u                      > "$trace_file"
+echo "Used '`basename $0`' version: ${VERSION}"     >> "$trace_file"
+echo "Running on host: ${LOCAL_FQDN}"               >> "$trace_file"
+echo "Architectures: ${ARCHs[@]}"                   >> "$trace_file"
+echo "Upstream-mirror: ${UPSTREAM}"                 >> "$trace_file"
+
+# Timestamp
+echo "Updated at: `date`" > $LOCAL_DIR/.lastupdate
