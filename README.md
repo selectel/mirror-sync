@@ -5,12 +5,12 @@ Script set for partial rpm/deb repositories mirroring with sanity check.
 
 # Description
 
-WARNING: This script set is not designed to be used on 'live' repositories
-(ones that available to clients during synchronization). It violates
+WARNING: This set of scripts is not designed to be used on 'live' repositories
+that are available to clients during synchronization It violates
 common synchronization order(packages first, metadata later) to provide
 partial mirroring capability. It means that repositories will be
-inconsistent during the update. Please use those scripts in conjunction
-with snapshots, on inactive repos or something like that.
+inconsistent during the update. Please use these scripts in conjunction
+with snapshots, on inactive repos, etc.
 
 Only rsync mirrors are supported.
 
@@ -49,7 +49,7 @@ Create/edit configuration files for required repositories:
     vim /opt/mirror-sync/config/centos.cfg
     vim /opt/mirror-sync/config/debian.cfg
     
-Now you can start synchronization of desired repository like that:
+Now you can start synchronization of desired repository:
 
     /opt/mirror-sync/rpm-mirror /opt/mirror-sync/config/centos.cfg
     
