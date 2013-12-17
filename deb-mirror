@@ -518,17 +518,22 @@ rm "$files_to_dl_list"
 rm "$pool_required_files"
 rm "$pool_current_files"
 
-# Create trace
-rm -r "$LOCAL_DIR/project/trace/"
-mkdir -p "$LOCAL_DIR/project/trace/"
-fetch "/project/trace/*" "$LOCAL_DIR/project/trace/"
+# Create trace if exists
+if rsync_file_exists "project/trace"; then
+    info "Setting up trace file"
+    rm -rf "$LOCAL_DIR/project/trace/"
+    mkdir -p "$LOCAL_DIR/project/trace/"
+    fetch "/project/trace/*" "$LOCAL_DIR/project/trace/"
 
-trace_file="$LOCAL_DIR/project/trace/$LOCAL_FQDN"
-LC_ALL=POSIX LANG=POSIX date -u                      > "$trace_file"
-echo "Used '`basename $0`' version: ${VERSION}"     >> "$trace_file"
-echo "Running on host: ${LOCAL_FQDN}"               >> "$trace_file"
-echo "Architectures: ${ARCHs[@]}"                   >> "$trace_file"
-echo "Upstream-mirror: ${UPSTREAM}"                 >> "$trace_file"
+    trace_file="$LOCAL_DIR/project/trace/$LOCAL_FQDN"
+    LC_ALL=POSIX LANG=POSIX date -u                      > "$trace_file"
+    echo "Used '`basename $0`' version: ${VERSION}"     >> "$trace_file"
+    echo "Running on host: ${LOCAL_FQDN}"               >> "$trace_file"
+    echo "Architectures: ${ARCHs[@]}"                   >> "$trace_file"
+    echo "Upstream-mirror: ${UPSTREAM}"                 >> "$trace_file"
+else
+    info "No trace found upstream, skipping..."
+fi
 
 # Timestamp
 echo "Updated at: `date`" > $LOCAL_DIR/.lastupdate
