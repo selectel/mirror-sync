@@ -375,7 +375,7 @@ for dist in "${DISTs[@]}"; do
             sources_pool_files+=( "$sources_file" )
         fi
 
-        # Fetch the contents packs
+        # Fetch the component contents packs
         if [[ "$FETCH_CONTENTS" = "yes" ]]; then
             info "Fetching component '$component' content lists"
             to_fetch=()
@@ -394,6 +394,19 @@ for dist in "${DISTs[@]}"; do
                 pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
                     fatal "Checksum check failed for $file"
             done
+
+            # If our component is "main", make link in the root of distribution
+            if [[ "$component" = "main" ]]; then
+                for arch in $arches; do
+                    if [[ -e "$LOCAL_DIR/dists/$dist/$component/Contents-$arch.gz" ]]; then
+                        debug "Creating link to main/Contents-$arch.gz at $LOCAL_DIR/dists/$dist"
+                        ln -sf main/Contents-$arch.gz $LOCAL_DIR/dists/$dist/Contents-$arch.gz
+                    else
+                        debug "Deleting link to main/Contents-$arch.gz at $LOCAL_DIR/dists/$dist"
+                        rm -f "$LOCAL_DIR/dists/$dist/Contents-$arch.gz"
+                    fi
+                done
+            fi
         fi
         done
 
