@@ -253,10 +253,33 @@ for dist in "${DISTs[@]}"; do
                 fi
 
                 # Check file by Release file's checksum
-                debug_job_start "Checking file $file"
-                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
+                pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" &> /dev/null || \
                     fatal "Checksum check failed for $file"
-                debug_job_ok
+
+		# Validate that theese friggin file have valid content
+                algo="${file##*.}"
+                if [[ " ${POSSIBLE_COMPRESSIONS[@]} " =~ " $algo " ]]; then
+                    if [[ "bz2" == "$algo" ]]; then
+                        decompressor="bunzip2 -c"
+                    elif [[ "gz" == "$algo" ]]; then
+                        decompressor="gunzip -c"
+                    else
+                        decompressor="un${algo} -c"
+                    fi
+                    debug "$file is an '$algo' archive, we should check for it contents (using: $decompressor)"
+                    cat "$file" | ${decompressor} > "${file%.*}"
+
+                    pkg_path="${file#$LOCAL_DIR/dists/$dist/}"
+                    if pkg_file_valid "$release_file" "${pkg_path%.*}"; then
+                        info "$file is valid archive of ${file%.*}"
+                    else
+                        error "$file is NOT valid archive of ${file%.*}, removing..."
+                        rm -f "${file}"
+                    fi
+                    rm -f "${file%.*}"
+                else
+                    debug "File $file is not archive, skipping content check..."
+                fi
             done
 
             # Make sure that we have at least one valid packages list
@@ -363,6 +386,31 @@ for dist in "${DISTs[@]}"; do
             for file in ${fetched_files[@]}; do
                 pkg_file_valid "$release_file" "${file#$LOCAL_DIR/dists/$dist/}" || \
                     fatal "Checksum check failed for $file"
+
+		# Validate that theese friggin file have valid content
+                algo="${file##*.}"
+                if [[ " ${POSSIBLE_COMPRESSIONS[@]} " =~ " $algo " ]]; then
+                    if [[ "bz2" == "$algo" ]]; then
+                        decompressor="bunzip2 -c"
+                    elif [[ "gz" == "$algo" ]]; then
+                        decompressor="gunzip -c"
+                    else
+                        decompressor="un${algo} -c"
+                    fi
+                    debug "$file is an '$algo' archive, we should check for it contents (using: $decompressor)"
+                    cat "$file" | ${decompressor} > "${file%.*}"
+
+                    pkg_path="${file#$LOCAL_DIR/dists/$dist/}"
+                    if pkg_file_valid "$release_file" "${pkg_path%.*}"; then
+                        info "$file is valid archive of ${file%.*}"
+                    else
+                        error "$file is NOT valid archive of ${file%.*}, removing..."
+                        rm -f "${file}"
+                    fi
+                    rm -f "${file%.*}"
+                else
+                    debug "File $file is not archive, skipping content check..."
+                fi
             done
 
             sources_file=`guess_filename "$LOCAL_DIR/$comp_path/source/Sources"`
