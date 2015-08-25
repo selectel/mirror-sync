@@ -72,6 +72,7 @@ fetch_all()
         debug "Fetched file $LOCAL_DIR/$line"
         fetched+=( "$LOCAL_DIR/$line" )
     done
+    echo ${fetched[@]}
 
     # Old slow and deprecated
     #local fetched=()
