@@ -234,6 +234,12 @@ for dist in "${DISTs[@]}"; do
                 to_fetch+=( "$arch_path/Packages.$ext" )
             done
 
+            # Clean up before fetch
+            for oldfile in ${to_fetch[@]}; do
+                debug "Removing old file '${LOCAL_DIR}/${oldfile}'"
+                rm -f "${LOCAL_DIR}/${oldfile}"
+            done
+
             # Check if we want a Packages.diff files Index too
             if [[ "$FETCH_DIFF" = "yes" ]] && \
                 rsync_file_exists "$arch_path/Packages.diff/Index"; then
@@ -376,6 +382,12 @@ for dist in "${DISTs[@]}"; do
             to_fetch+=( "$comp_path/source/Sources" )
             for ext in ${POSSIBLE_COMPRESSIONS[@]}; do
                 to_fetch+=( "$comp_path/source/Sources.$ext" )
+            done
+
+            # Clean up before fetch
+            for oldfile in ${to_fetch[@]}; do
+                debug "Removing old file '${LOCAL_DIR}/${oldfile}'"
+                rm -f "${LOCAL_DIR}/${oldfile}"
             done
 
             # Download files in our wishlist and get names of actually
