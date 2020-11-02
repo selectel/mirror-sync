@@ -1,8 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # This script parses contents of given archlinux DB files, and creates rsync
 # command line to synchronize mirror
 
-import re
 import os
 import sys
 
@@ -35,12 +34,15 @@ for pkgfile in sys.argv[1:]:
 
             filename = ""
             has_sig = False
+            md5sum = ""
             for i in range(0, len(desc)):
-                if desc[i].startswith('%FILENAME%'):
-                    filename = os.path.realpath(os.path.join(repo_root, desc[i+1].strip("\n")))
-                if desc[i].startswith('%MD5SUM%'):
-                    md5sum = desc[i+1].strip("\n")
-                if desc[i].startswith('%PGPSIG%'):
+                d = desc[i].decode('utf-8')
+                if d.startswith('%FILENAME%'):
+                    filename = os.path.realpath(os.path.join(repo_root,
+                                                             desc[i+1].decode('utf-8').strip("\n")))
+                if d.startswith('%MD5SUM%'):
+                    md5sum = desc[i+1].decode('utf-8').strip("\n")
+                if d.startswith('%PGPSIG%'):
                     has_sig = True
 
             if filename:
@@ -48,4 +50,3 @@ for pkgfile in sys.argv[1:]:
                 sys.stderr.write("MD5 " + md5sum + " " + filename + "\n")
                 if has_sig:
                     sys.stdout.write(filename + ".sig\n")
-
