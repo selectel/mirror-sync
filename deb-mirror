@@ -486,9 +486,9 @@ files_to_dl_list=`mktemp --suffix="-deb-mirror"`
 deb_md5=`mktemp --suffix="-deb-mirror-md5"`
 rsync_log=`mktemp --suffix="-deb-mirror-rslog"`
 
-$BINROOT/util/parsePackages.py ${packages_pool_files[@]} > "$files_to_dl_list" \
+$BINROOT/util/parse_packages.py ${packages_pool_files[@]} > "$files_to_dl_list" \
                                                         2> "$deb_md5" && \
-$BINROOT/util/parseSources.py ${sources_pool_files[@]}  >> "$files_to_dl_list" || \
+$BINROOT/util/parse_sources.py ${sources_pool_files[@]}  >> "$files_to_dl_list" || \
     fatal "Unable to create list of packages to fetch"
 
 # Subroutine to check md5 sum for the file
