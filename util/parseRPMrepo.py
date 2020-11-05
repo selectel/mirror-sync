@@ -72,8 +72,6 @@ for repo in sys.argv[1:]:
 
     tree = ElementTree()
     tree.parse(file)
-    # for i in tree.iter():
-    #    print(i.tag)
 
     for package in tree.findall(XMLPKGNS + "package"):
         location = package.find(XMLPKGNS + "location").get("href")
@@ -81,6 +79,3 @@ for repo in sys.argv[1:]:
         checksum_type = package.find(XMLPKGNS + "checksum").get("type")
         sys.stdout.write(location + "\n")
         sys.stderr.write(checksum_type + " " + checksum + " " + location + "\n")
-
-    # for location in tree.findall(XMLPKGNS+"package/"+XMLPKGNS+"location"):
-    #    print("/"+location.get("href"))

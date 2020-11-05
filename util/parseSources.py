@@ -26,7 +26,6 @@ for pkgfile in sys.argv[1:]:
 
     for line in file:
         if line == "\n":
-            # print("----------------------------------------------------")
             basedir = pkg['directory']
             files = files_regex.findall(pkg['files'])
             for md5, file in files:
@@ -42,5 +41,4 @@ for pkgfile in sys.argv[1:]:
             # We got a multiliner continuation
             pkg[cur_param] += line.lstrip()
         else:
-            print("IMMPOSSIBIRUUUU!!!!")
             sys.exit(999)
