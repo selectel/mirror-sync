@@ -29,7 +29,7 @@ for pkgfile in sys.argv[1:]:
             basedir = pkg['directory']
             files = files_regex.findall(pkg['files'])
             for md5, file in files:
-                print(basedir + "/" + file)
+                print(f"{basedir}/{file}")
             pkg = {}
             continue
 

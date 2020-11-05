@@ -27,9 +27,9 @@ for pkgfile in sys.argv[1:]:
         # If we have a blank line - it's means that we're on package separator
         # Print the information about current package and clear current package info
         if line == "\n":
-            sys.stdout.write(pkg["filename"] + "\n")
+            sys.stdout.write(f"{pkg['filename']}\n")
             if "md5sum" in pkg:
-                sys.stderr.write("MD5 " + pkg["md5sum"] + " " + pkg["filename"] + "\n")
+                sys.stderr.write(f"MD5 {pkg['md5sum']} {pkg['filename']}\n")
             pkg = {}
 
         m = regex.match(line)

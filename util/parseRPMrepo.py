@@ -29,16 +29,16 @@ def parse_repomd(repo):
     tree = ElementTree()
     tree.parse(open(filename, 'r'))
 
-    for data in tree.findall(XMLREPONS + "data"):
+    for data in tree.findall(f"{XMLREPONS}data"):
         filetype = data.get('type')
-        f_location = data.find(XMLREPONS + "location")
+        f_location = data.find(f"{XMLREPONS}location")
         if f_location is not None:
             filepath = f_location.get('href')
         else:
-            raise TypeError("Bad repomd: Failed to get location of '" + filetype + "'")
+            raise TypeError(f"Bad repomd: Failed to get location of '{filetype}'")
 
         # Check checksum for file
-        f_checksum = data.find(XMLREPONS + "checksum")
+        f_checksum = data.find(f"{XMLREPONS}checksum")
         checksumtype = ''
         checksum = ''
         if f_checksum is not None:
@@ -46,8 +46,7 @@ def parse_repomd(repo):
             checksum = f_checksum.text
         if not check_file(os.path.join(repo, filepath), checksumtype, checksum):
             raise TypeError(
-                "Bad repo: Wrong checksum for file '" + os.path.join(repo, filepath) +
-                "', expected '" + checksum + "'")
+                f"Bad repo: Wrong checksum for file '{os.path.join(repo, filepath)}', expected '{checksum}'")
 
         # Append file info
         toret[filetype] = filepath
@@ -73,9 +72,9 @@ for repo in sys.argv[1:]:
     tree = ElementTree()
     tree.parse(file)
 
-    for package in tree.findall(XMLPKGNS + "package"):
-        location = package.find(XMLPKGNS + "location").get("href")
-        checksum = package.find(XMLPKGNS + "checksum").text
-        checksum_type = package.find(XMLPKGNS + "checksum").get("type")
-        sys.stdout.write(location + "\n")
-        sys.stderr.write(checksum_type + " " + checksum + " " + location + "\n")
+    for package in tree.findall(f"{XMLPKGNS}package"):
+        location = package.find(f"{XMLPKGNS}location").get("href")
+        checksum = package.find(f"{XMLPKGNS}checksum").text
+        checksum_type = package.find(f"{XMLPKGNS}checksum").get("type")
+        sys.stdout.write(f"{location}\n")
+        sys.stderr.write(f"{checksum_type} {checksum} {location}\n")
