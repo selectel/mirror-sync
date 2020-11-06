@@ -93,7 +93,7 @@ files_to_dl_list=`mktemp --suffix="-arch-mirror"`
 pkg_sums=`mktemp --suffix="-arch-mirror-sums"`
 rsync_log=`mktemp --suffix="-arch-mirror-rslog"`
                                                                                  
-$BINROOT/util/parseArchDB.py ${REPODBs[@]} 2> >(sed -e "s#${LOCAL_DIR}/##" >> "$pkg_sums") | sed -e "s#${LOCAL_DIR}/##" > \
+$BINROOT/util/parse_arch_db.py ${REPODBs[@]} 2> >(sed -e "s#${LOCAL_DIR}/##" >> "$pkg_sums") | sed -e "s#${LOCAL_DIR}/##" > \
     "$files_to_dl_list" || \
     fatal "Unable to create list of packages to fetch"                          
                                                                                   

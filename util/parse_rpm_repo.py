@@ -1,26 +1,26 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # This script parses RPM repos
 
+import hashlib
 import os
 import sys
-import hashlib
-
 from xml.etree.ElementTree import ElementTree
-from xml.etree.ElementTree import dump 
 
 XMLREPONS = "{http://linux.duke.edu/metadata/repo}"
 XMLPKGNS = "{http://linux.duke.edu/metadata/common}"
 
+
 def check_file(filepath, checksumtype, checksum):
     filechecksum = ""
     if checksumtype == "sha":
-        filechecksum = hashlib.sha1(''.join(open(filepath).readlines())).hexdigest()
+        filechecksum = hashlib.sha1(b''.join(open(filepath, mode='rb').readlines())).hexdigest()
     elif checksumtype == "sha256":
-        filechecksum = hashlib.sha256(''.join(open(filepath).readlines())).hexdigest()
+        filechecksum = hashlib.sha256(b''.join(open(filepath, mode='rb').readlines())).hexdigest()
 
     if filechecksum == checksum:
         return True
     return False
+
 
 def parse_repomd(repo):
     filename = os.path.join(repo, "repodata", "repomd.xml")
@@ -29,24 +29,29 @@ def parse_repomd(repo):
     tree = ElementTree()
     tree.parse(open(filename, 'r'))
 
-    for data in tree.findall(XMLREPONS+"data"):
+    for data in tree.findall(f"{XMLREPONS}data"):
         filetype = data.get('type')
-        f_location = data.find(XMLREPONS+"location")
+        f_location = data.find(f"{XMLREPONS}location")
         if f_location is not None:
             filepath = f_location.get('href')
-        else: raise TypeError("Bad repomd: Failed to get location of '" + filetype + "'")
+        else:
+            raise TypeError(f"Bad repomd: Failed to get location of '{filetype}'")
 
         # Check checksum for file
-        f_checksum = data.find(XMLREPONS+"checksum")
+        f_checksum = data.find(f"{XMLREPONS}checksum")
+        checksumtype = ''
+        checksum = ''
         if f_checksum is not None:
             checksumtype = f_checksum.get('type')
             checksum = f_checksum.text
         if not check_file(os.path.join(repo, filepath), checksumtype, checksum):
-            raise TypeError("Bad repo: Wrong checksum for file '" + os.path.join(repo, filepath) + "', expected '" + checksum + "'")
+            raise TypeError(
+                f"Bad repo: Wrong checksum for file '{os.path.join(repo, filepath)}', expected '{checksum}'")
 
         # Append file info
         toret[filetype] = filepath
     return toret
+
 
 for repo in sys.argv[1:]:
     repofiles = parse_repomd(repo)
@@ -55,26 +60,21 @@ for repo in sys.argv[1:]:
     pkgfile = os.path.join(repo, repofiles["primary"])
     if pkgfile.endswith(".gz"):
         import gzip
+
         file = gzip.open(pkgfile)
     elif pkgfile.endswith(".bz2"):
         import bz2
+
         file = bz2.BZ2File(pkgfile)
     else:
         file = open(pkgfile)
 
     tree = ElementTree()
     tree.parse(file)
-    #for i in tree.iter():
-    #    print i.tag
 
-    for package in tree.findall(XMLPKGNS+"package"):
-        location = package.find(XMLPKGNS+"location").get("href")
-        checksum = package.find(XMLPKGNS+"checksum").text
-        checksum_type = package.find(XMLPKGNS+"checksum").get("type")
-        sys.stdout.write(location+"\n")
-        sys.stderr.write(checksum_type+" "+checksum+" "+location+"\n")
-            
-    #for location in tree.findall(XMLPKGNS+"package/"+XMLPKGNS+"location"):
-    #    print("/"+location.get("href"))
-
-
+    for package in tree.findall(f"{XMLPKGNS}package"):
+        location = package.find(f"{XMLPKGNS}location").get("href")
+        checksum = package.find(f"{XMLPKGNS}checksum").text
+        checksum_type = package.find(f"{XMLPKGNS}checksum").get("type")
+        sys.stdout.write(f"{location}\n")
+        sys.stderr.write(f"{checksum_type} {checksum} {location}\n")

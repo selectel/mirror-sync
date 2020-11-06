@@ -88,7 +88,7 @@ for repo in "${REPOs[@]}"; do
 
 
     info "Parsing repo '$repo' metadata"
-    $BINROOT/util/parseRPMrepo.py $LOCAL_DIR/$repo 2> >(awk "{\$3=\"${repo}/\"\$3; print \$0}" >> "$rpm_sums") | sed "s#^#${repo}/#" >> \
+    $BINROOT/util/parse_rpm_repo.py $LOCAL_DIR/$repo 2> >(awk "{\$3=\"${repo}/\"\$3; print \$0}" >> "$rpm_sums") | sed "s#^#${repo}/#" >> \
         $files_to_dl_list
 done
 
