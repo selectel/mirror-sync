@@ -46,7 +46,7 @@ for pkgfile in sys.argv[1:]:
                     has_sig = True
 
             if filename:
-                sys.stdout.write(f"{filename}\n")
-                sys.stderr.write(f"MD5 {md5sum} {filename}\n")
+                sys.stdout.write(filename + "\n")
+                sys.stderr.write("MD5 " + md5sum + " " + filename + "\n")
                 if has_sig:
-                    sys.stdout.write(f"{filename}.sig\n")
+                    sys.stdout.write(filename + ".sig\n")
