@@ -13,13 +13,13 @@ for pkgfile in sys.argv[1:]:
     if pkgfile.endswith(".gz"):
         import gzip
 
-        file = gzip.open(pkgfile)
+        file = gzip.open(pkgfile, mode='rt', encoding="utf-8")
     elif pkgfile.endswith(".bz2"):
         import bz2
 
-        file = bz2.BZ2File(pkgfile)
+        file = bz2.open(pkgfile, mode='rt', encoding="utf-8")
     else:
-        file = open(pkgfile)
+        file = open(pkgfile, mode='rt', encoding="utf-8")
 
     pkg = {}
     cur_param = ""
@@ -29,7 +29,7 @@ for pkgfile in sys.argv[1:]:
             basedir = pkg['directory']
             files = files_regex.findall(pkg['files'])
             for md5, file in files:
-                print(f"{basedir}/{file}")
+                print(basedir + "/" + file)
             pkg = {}
             continue
 

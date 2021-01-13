@@ -12,13 +12,13 @@ for pkgfile in sys.argv[1:]:
     if pkgfile.endswith(".gz"):
         import gzip
 
-        file = gzip.open(pkgfile)
+        file = gzip.open(pkgfile, mode='rt', encoding="utf-8")
     elif pkgfile.endswith(".bz2"):
         import bz2
 
-        file = bz2.BZ2File(pkgfile)
+        file = bz2.open(pkgfile, mode='rt', encoding="utf-8")
     else:
-        file = open(pkgfile)
+        file = open(pkgfile, mode='rt', encoding="utf-8")
 
     # Current package 
     pkg = {}
@@ -27,9 +27,9 @@ for pkgfile in sys.argv[1:]:
         # If we have a blank line - it's means that we're on package separator
         # Print the information about current package and clear current package info
         if line == "\n":
-            sys.stdout.write(f"{pkg['filename']}\n")
+            sys.stdout.write(pkg["filename"] + "\n")
             if "md5sum" in pkg:
-                sys.stderr.write(f"MD5 {pkg['md5sum']} {pkg['filename']}\n")
+                sys.stderr.write("MD5 " + pkg["md5sum"] + " " + pkg["filename"] + "\n")
             pkg = {}
 
         m = regex.match(line)
